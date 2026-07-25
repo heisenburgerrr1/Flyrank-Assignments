@@ -46,15 +46,15 @@ def get_task(task_id: int):
     raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
 
-# @app.post("/tasks", status_code=201)
-# def create_task(new_task: TaskCreate):
-#     if not new_task.title or not new_task.title.strip():
-#         raise HTTPException(status_code=400, detail="Title is required")
+@app.post("/tasks", status_code=201)
+def create_task(new_task: TaskCreate):
+    if not new_task.title or not new_task.title.strip():
+        raise HTTPException(status_code=400, detail="Title is required")
 
-#     next_id = max((t.id for t in tasks), default=0) + 1
-#     task = Task(id=next_id, title=new_task.title, done=False)
-#     tasks.append(task)
-#     return task
+    next_id = max((t.id for t in tasks), default=0) + 1
+    task = Task(id=next_id, title=new_task.title, done=False)
+    tasks.append(task)
+    return task
 
 
 # @app.put("/tasks/{task_id}")
