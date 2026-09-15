@@ -10,7 +10,7 @@ You need Python 3.10 or newer.
 
 ```bash
 git clone https://github.com/heisenburgerrr1/Crud-api-study.git
-cd Crud-api-study
+cd Crud-api-study/week1
 python -m venv venv
 ```
 
