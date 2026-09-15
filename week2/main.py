@@ -1,3 +1,7 @@
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -40,6 +44,42 @@ def starting_tasks():
 
 
 tasks = starting_tasks()
+
+
+# tasks.db sits next to this file, whatever folder the server is started from.
+DB_PATH = Path(__file__).parent / "tasks.db"
+
+SEED_TASKS = [("Buy milk", False), ("Walk the dog", True), ("Finish assignment", False)]
+
+
+@contextmanager
+def connect():
+    """Open tasks.db (creating the file if it is missing), commit if the block
+    succeeds, roll back if it raises, and always close the connection."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
+def init_db():
+    """Create the tasks table if needed and seed it, but only when it is empty."""
+    with connect() as db:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS tasks ("
+            "id INTEGER PRIMARY KEY, "
+            "title TEXT NOT NULL, "
+            "done BOOLEAN NOT NULL DEFAULT 0)"
+        )
+        count = db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        if count == 0:
+            db.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", SEED_TASKS)
+
+
+init_db()
 
 
 # FastAPI's own errors look like {"detail": "..."}, but this API promises
