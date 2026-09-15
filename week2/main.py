@@ -79,6 +79,11 @@ def init_db():
             db.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", SEED_TASKS)
 
 
+def row_to_task(row):
+    """Turn a database row into a Task. SQLite stores done as 0/1."""
+    return Task(id=row["id"], title=row["title"], done=bool(row["done"]))
+
+
 init_db()
 
 
@@ -113,8 +118,10 @@ def health_check():
 @app.get("/stats", summary="Count tasks")
 def get_stats():
     """How many tasks there are in total, how many are done and how many are open."""
-    done = len([t for t in tasks if t.done])
-    return {"total": len(tasks), "done": done, "open": len(tasks) - done}
+    with connect() as db:
+        total = db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        done = db.execute("SELECT COUNT(*) FROM tasks WHERE done = 1").fetchone()[0]
+    return {"total": total, "done": done, "open": total - done}
 
 
 @app.get("/tasks", response_model=list[Task], summary="List tasks")
@@ -130,7 +137,9 @@ def get_tasks(
     Optional filters: `done=true` keeps only finished tasks, `search=milk` keeps
     tasks whose title contains that word, and `limit`/`offset` page the result.
     """
-    found = tasks
+    with connect() as db:
+        rows = db.execute("SELECT * FROM tasks ORDER BY id").fetchall()
+    found = [row_to_task(row) for row in rows]
 
     if done is not None:
         found = [t for t in found if t.done == done]
@@ -154,10 +163,11 @@ def get_tasks(
 )
 def get_task(task_id: int):
     """Return the single task with this id, or 404 if there is none."""
-    for task in tasks:
-        if task.id == task_id:
-            return task
-    raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    with connect() as db:
+        row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return row_to_task(row)
 
 
 @app.post(
