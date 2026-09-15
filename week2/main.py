@@ -182,10 +182,11 @@ def create_task(new_task: TaskCreate):
     if not new_task.title or not new_task.title.strip():
         raise HTTPException(status_code=400, detail="Title is required")
 
-    next_id = max((t.id for t in tasks), default=0) + 1
-    task = Task(id=next_id, title=new_task.title, done=False)
-    tasks.append(task)
-    return task
+    with connect() as db:
+        task_id = db.execute(
+            "INSERT INTO tasks (title, done) VALUES (?, ?)", (new_task.title, False)
+        ).lastrowid
+    return Task(id=task_id, title=new_task.title, done=False)
 
 
 @app.put(
