@@ -2,11 +2,11 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Literal, Optional
 
 app = FastAPI(
     title="Task API",
@@ -55,7 +55,13 @@ def connect():
 
 
 def seed(db):
-    db.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", SEED_TASKS)
+    """Insert the 3 example tasks. It runs inside the caller's transaction, so
+    either all 3 go in or, if anything fails, none of them do."""
+    db.executemany(
+        "INSERT INTO tasks (title, done, created_at, updated_at) "
+        "VALUES (?, ?, datetime('now'), datetime('now'))",
+        SEED_TASKS,
+    )
 
 
 def init_db():
@@ -65,8 +71,22 @@ def init_db():
             "CREATE TABLE IF NOT EXISTS tasks ("
             "id INTEGER PRIMARY KEY, "
             "title TEXT NOT NULL, "
-            "done BOOLEAN NOT NULL DEFAULT 0)"
+            "done BOOLEAN NOT NULL DEFAULT 0, "
+            "created_at TEXT, "
+            "updated_at TEXT)"
         )
+
+        # CREATE TABLE IF NOT EXISTS skips a table that already exists, so a
+        # tasks.db made before the timestamp columns existed needs them added.
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
+        if "created_at" not in columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN created_at TEXT")
+        if "updated_at" not in columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN updated_at TEXT")
+
+        # Lets WHERE done = ? jump to the matching rows instead of reading them all.
+        db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_done ON tasks (done)")
+
         count = db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
         if count == 0:
             seed(db)
@@ -121,31 +141,37 @@ def get_stats():
 def get_tasks(
     done: Optional[bool] = None,
     search: Optional[str] = None,
-    limit: Optional[int] = None,
-    offset: int = 0,
+    sort: Literal["id", "title"] = "id",
+    limit: Optional[int] = Query(None, ge=0),
+    offset: int = Query(0, ge=0),
 ):
     """
-    Return the tasks, newest last.
+    Return the tasks, oldest first.
 
     Optional filters: `done=true` keeps only finished tasks, `search=milk` keeps
-    tasks whose title contains that word, and `limit`/`offset` page the result.
+    tasks whose title contains that word, `sort=title` orders them A to Z, and
+    `limit`/`offset` page the result. All of it is done by the SQL query.
     """
-    with connect() as db:
-        rows = db.execute("SELECT * FROM tasks ORDER BY id").fetchall()
-    found = [row_to_task(row) for row in rows]
-
+    where, params = [], []
     if done is not None:
-        found = [t for t in found if t.done == done]
-
+        where.append("done = ?")
+        params.append(done)
     if search:
-        found = [t for t in found if search.lower() in t.title.lower()]
+        # % and _ are wildcards in LIKE, so escape them to match them literally.
+        pattern = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("title LIKE ? ESCAPE '\\'")
+        params.append(f"%{pattern}%")
 
-    found = found[offset:]
+    sql = "SELECT * FROM tasks"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY title COLLATE NOCASE, id" if sort == "title" else " ORDER BY id"
+    sql += " LIMIT ? OFFSET ?"
+    params += [-1 if limit is None else limit, offset]
 
-    if limit is not None:
-        found = found[:limit]
-
-    return found
+    with connect() as db:
+        rows = db.execute(sql, params).fetchall()
+    return [row_to_task(row) for row in rows]
 
 
 @app.get(
@@ -177,7 +203,9 @@ def create_task(new_task: TaskCreate):
 
     with connect() as db:
         task_id = db.execute(
-            "INSERT INTO tasks (title, done) VALUES (?, ?)", (new_task.title, False)
+            "INSERT INTO tasks (title, done, created_at, updated_at) "
+            "VALUES (?, ?, datetime('now'), datetime('now'))",
+            (new_task.title, False),
         ).lastrowid
     return Task(id=task_id, title=new_task.title, done=False)
 
@@ -211,7 +239,8 @@ def update_task(task_id: int, updated: TaskUpdate):
             task.done = updated.done
 
         db.execute(
-            "UPDATE tasks SET title = ?, done = ? WHERE id = ?",
+            "UPDATE tasks SET title = ?, done = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
             (task.title, task.done, task_id),
         )
     return task
