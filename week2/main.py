@@ -11,8 +11,8 @@ from typing import Optional
 app = FastAPI(
     title="Task API",
     version="1.0",
-    description="A small in-memory CRUD API for a to-do list. Data lives in a "
-    "Python list, so everything resets when the server restarts.",
+    description="A small CRUD API for a to-do list. Tasks are stored in a SQLite "
+    "database (tasks.db), so they survive server restarts.",
 )
 
 
@@ -35,17 +35,6 @@ class Error(BaseModel):
     error: str
 
 
-def starting_tasks():
-    return [
-        Task(id=1, title="Buy milk", done=False),
-        Task(id=2, title="Walk the dog", done=True),
-        Task(id=3, title="Finish assignment", done=False),
-    ]
-
-
-tasks = starting_tasks()
-
-
 # tasks.db sits next to this file, whatever folder the server is started from.
 DB_PATH = Path(__file__).parent / "tasks.db"
 
@@ -65,6 +54,10 @@ def connect():
         conn.close()
 
 
+def seed(db):
+    db.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", SEED_TASKS)
+
+
 def init_db():
     """Create the tasks table if needed and seed it, but only when it is empty."""
     with connect() as db:
@@ -76,7 +69,7 @@ def init_db():
         )
         count = db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
         if count == 0:
-            db.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", SEED_TASKS)
+            seed(db)
 
 
 def row_to_task(row):
@@ -206,15 +199,22 @@ def update_task(task_id: int, updated: TaskUpdate):
     if updated.title is not None and not updated.title.strip():
         raise HTTPException(status_code=400, detail="Title cannot be empty")
 
-    for task in tasks:
-        if task.id == task_id:
-            if updated.title is not None:
-                task.title = updated.title
-            if updated.done is not None:
-                task.done = updated.done
-            return task
+    with connect() as db:
+        row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        task = row_to_task(row)
+        if updated.title is not None:
+            task.title = updated.title
+        if updated.done is not None:
+            task.done = updated.done
+
+        db.execute(
+            "UPDATE tasks SET title = ?, done = ? WHERE id = ?",
+            (task.title, task.done, task_id),
+        )
+    return task
 
 
 @app.delete(
@@ -225,16 +225,17 @@ def update_task(task_id: int, updated: TaskUpdate):
 )
 def delete_task(task_id: int):
     """Remove a task. Returns 204 and an empty body."""
-    for i, task in enumerate(tasks):
-        if task.id == task_id:
-            tasks.pop(i)
-            return
-    raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    with connect() as db:
+        deleted = db.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
 
 @app.post("/reset", response_model=list[Task], summary="Reset the demo data")
 def reset_tasks():
-    """Throw away every change and put the 3 example tasks back. Handy for demos."""
-    global tasks
-    tasks = starting_tasks()
-    return tasks
+    """Delete every task in the database and put the 3 example tasks back."""
+    with connect() as db:
+        db.execute("DELETE FROM tasks")
+        seed(db)
+        rows = db.execute("SELECT * FROM tasks ORDER BY id").fetchall()
+    return [row_to_task(row) for row in rows]
